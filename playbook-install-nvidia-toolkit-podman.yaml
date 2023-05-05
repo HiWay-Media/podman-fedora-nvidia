@@ -1,0 +1,75 @@
+# /playbook-install-nvidia-container-toolkit-podman.yaml
+---
+- name: Install nvidia-container-toolkit for podman
+  hosts: localhost
+  connection: local
+
+  vars:
+    # For Fedora 37
+    distribution: rhel9.0
+
+    # Image used to test nvidia-container-toolkit with podman
+    test_container_image: docker.io/nvidia/cuda:11.6.2-base-ubuntu20.04
+
+  tasks:
+    # -- Preflight checks
+    - name: Preflight checks (GPU found)
+      block:
+        - name: Check if GPU is available
+          ansible.builtin.shell: nvidia-smi -L
+          register: nvidia_smi_L
+          changed_when: false
+          failed_when: "'UUID: GPU-' not in nvidia_smi_L.stdout"
+      rescue:
+        - name: ERROR NVIDIA GPU not found
+          ansible.builtin.fail:
+            msg: "ERROR: NVIDIA GPU not found. Please check if the GPU is available."
+
+    # -- Install
+    - name: Install nvidia-container-toolkit and podman
+      block:
+        - name: Add nvidia-docker repo
+          become: true
+          ansible.builtin.get_url:
+            url: https://nvidia.github.io/nvidia-docker/{{ distribution }}/nvidia-docker.repo
+            dest: /etc/yum.repos.d/nvidia-container-toolkit.repo
+            mode: '0644'
+
+        - name: Install xorg-x11-drv-nvidia
+          block:
+            - name: Install xorg-x11-drv-nvidia
+              become: true
+              ansible.builtin.package:
+                name: xorg-x11-drv-nvidia
+                state: present
+          rescue:
+            - name: ERROR package couldn't be installed
+              ansible.builtin.fail:
+                msg: "ERROR: package xorg-x11-drv-nvidia couldn't be installed. Did you enable RPM Fusion? Check https://rpmfusion.org/Configuration"
+
+        - name: Install nvidia-container-toolkit and podman
+          become: true
+          ansible.builtin.package:
+            name:
+              - nvidia-container-toolkit
+              - podman
+            state: present
+
+        - name: Set no-cgroups to true
+          become: true
+          ansible.builtin.lineinfile:
+            path: /etc/nvidia-container-runtime/config.toml
+            regexp: '^#no-cgroups = false'
+            line: 'no-cgroups = true'
+            state: present
+
+    # -- Test
+    - name: Check if the GPU is visible from the container
+      ansible.builtin.shell: >-
+        podman run --rm --security-opt=label=disable \
+          --hooks-dir=/usr/share/containers/oci/hooks.d/ \
+          {{ test_container_image }} \
+            nvidia-smi -L
+      register: container_nvidia_smi_L
+      changed_when: false
+      failed_when: "'UUID: GPU-' not in container_nvidia_smi_L.stdout"
